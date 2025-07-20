@@ -43,3 +43,46 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# 개발 중 생성되는 임시 파일들
+*.tmp
+*.temp
+*.bak
+*.orig
+.env
+.env.local
+
+# 패키지 락 파일 (팀 프로젝트에서는 포함하는 것이 좋지만, 개인 개발에서는 제외 가능)
+# pubspec.lock
+
+# Coverage 파일들
+coverage/
+*.lcov
+
+# 테스트 관련
+test/.test_coverage.dart
+
+# 로그 파일들
+*.log
+logs/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# VSCode (필요에 따라 포함/제외)
+.vscode/settings.json
+.vscode/tasks.json
+.vscode/launch.json
+
+# 중요: 포함되어야 할 파일들은 아래와 같습니다
+# !lib/
+# !pubspec.yaml
+# !README.md
+# !analysis_options.yaml

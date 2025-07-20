@@ -1,0 +1,50 @@
+# 이 프로젝트에서 중요한 파일들 (Git에 포함되어야 함)
+
+## 핵심 소스 코드
+- lib/core/abstraction/*.dart  # Interface 정의 파일들
+- lib/main.dart               # 메인 앱 파일
+
+## 프로젝트 설정
+- pubspec.yaml               # 프로젝트 의존성
+- analysis_options.yaml      # Dart 분석 옵션
+- README.md                  # 프로젝트 설명
+
+## 플랫폼 설정 (필요시)
+- android/app/src/main/AndroidManifest.xml
+- ios/Runner/Info.plist
+- web/index.html
+
+## 현재 작업한 Interface 구조
+```
+lib/core/abstraction/
+├── IData.dart                    # 기본 interface
+├── IServerResponse.dart          # 메인 서버 응답 
+├── ILogin.dart                   # 로그인
+├── INotification.dart            # 알림
+├── ISurveyStatus.dart            # 설문 상태
+├── ISurveyStatusItem.dart        # 설문 상태 아이템
+├── ISurvey.dart                  # 설문
+├── ITimedSurvey.dart            # 시간별 설문
+├── IQuestion.dart               # 질문
+└── IQuestionAttribute.dart      # 질문 속성
+```
+
+## Git 명령어 예시
+```bash
+# 변경사항 확인
+git status
+
+# 특정 파일만 스테이징
+git add lib/core/abstraction/
+git add pubspec.yaml
+git add README.md
+
+# 커밋
+git commit -m "Add interface structure for server data"
+
+# 전체 lib 폴더 추가
+git add lib/
+
+# 모든 중요 파일 한번에 추가
+git add lib/ pubspec.yaml README.md analysis_options.yaml
+``` 
