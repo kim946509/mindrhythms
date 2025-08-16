@@ -1,38 +1,28 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'presentation/main_controller.dart';
-import 'presentation/main_view.dart';
+import 'package:mindrhythms/core/app_context.dart';
+import 'package:mindrhythms/page/splash_page.dart';
 
 void main() {
-  runApp(MindRhythmsApp());
+  // AppContext 초기화
+  Get.put(AppContext());
+  
+  runApp(const MyApp());
 }
 
-class MindRhythmsApp extends StatelessWidget {
-  const MindRhythmsApp({super.key});
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return GetMaterialApp(
-      title: 'Mind Rhythms',
+      title: '마음리듬',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF6B73FF)),
         useMaterial3: true,
-        fontFamily: 'NotoSans',
       ),
-      home: MindRhythmsHomePage(),
+      home: const SplashPage(),
       debugShowCheckedModeBanner: false,
     );
-  }
-}
-
-class MindRhythmsHomePage extends StatelessWidget {
-  const MindRhythmsHomePage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    // MainController를 여기서 생성하고 주입
-    Get.put(MainController());
-    
-    return MainView();
   }
 }
