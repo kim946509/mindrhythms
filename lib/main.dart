@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:mindrhythms/page/splash_page.dart';
-import 'package:mindrhythms/service/notification_service.dart';
+import 'package:mindrhythms/feature/notification_register.dart';
 
 void main() async {
   // Flutter 초기화 보장

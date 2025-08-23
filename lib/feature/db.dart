@@ -54,7 +54,7 @@ class DataBaseManager {
   // 데이터베이스 초기화
   static Future<Database> _initDB() async {
     final dbPath = await getDatabasesPath();
-    final path = join(dbPath, 'mind_rhythm_app_v2.db');
+    final path = join(dbPath, 'mind_rhythm_app_v3.db');
 
     // 개발 중 데이터베이스를 매번 초기화하고 싶을 때 아래 주석을 해제하세요.
     // await deleteDatabase(path);
@@ -63,7 +63,7 @@ class DataBaseManager {
     try {
       return await openDatabase(
         path,
-        version: 8, // 버전 업데이트 (알림 스케줄 테이블 추가)
+        version: 9, // 버전 업데이트 (다중 설문 지원)
         onCreate: _createDB,
         onUpgrade: _onUpgrade,
         onConfigure: (db) async {
@@ -78,7 +78,7 @@ class DataBaseManager {
       
       return await openDatabase(
         path,
-        version: 8,
+        version: 9,
         onCreate: _createDB,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
@@ -87,7 +87,7 @@ class DataBaseManager {
     }
   }
 
-  // 테이블 생성 (새로운 정규화 스키마)
+  // 테이블 생성 (다중 설문 지원 스키마)
   static Future<void> _createDB(Database db, int version) async {
     // 1. 사용자 정보 테이블
     await db.execute('''
@@ -101,14 +101,17 @@ class DataBaseManager {
       )
     ''');
 
-    // 2. 설문 테이블
+    // 2. 설문 테이블 (다중 설문 지원을 위한 개선)
     await db.execute('''
       CREATE TABLE IF NOT EXISTS survey (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        survey_uuid TEXT NOT NULL UNIQUE,
         survey_name TEXT NOT NULL,
         survey_description TEXT,
         start_date TEXT,
         end_date TEXT,
+        survey_order INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )
@@ -120,7 +123,8 @@ class DataBaseManager {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         survey_id INTEGER NOT NULL,
         time TEXT NOT NULL,
-        FOREIGN KEY(survey_id) REFERENCES survey(id) ON DELETE CASCADE
+        FOREIGN KEY(survey_id) REFERENCES survey(id) ON DELETE CASCADE,
+        UNIQUE(survey_id, time)
       )
     ''');
 
@@ -197,6 +201,12 @@ class DataBaseManager {
         UNIQUE(survey_id, user_id, time)
       )
     ''');
+
+    // 9. 인덱스 생성 (성능 최적화)
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_survey_uuid ON survey(survey_uuid)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_survey_order ON survey(survey_order)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_survey_status_date ON survey_status(survey_date, time)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_survey_response_date ON survey_response(survey_date)');
   }
   
   // 데이터베이스 업그레이드 처리
@@ -204,26 +214,14 @@ class DataBaseManager {
     debugPrint('데이터베이스 버전 업그레이드: $oldVersion → $newVersion');
     
     try {
-      // 버전 7에서 8로 업그레이드: 알림 스케줄 테이블만 추가
-      if (oldVersion == 7 && newVersion == 8) {
-        debugPrint('버전 7에서 8로 업그레이드: 알림 스케줄 테이블 추가');
-        await db.execute('''
-          CREATE TABLE IF NOT EXISTS notification_schedule (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            survey_id INTEGER NOT NULL,
-            user_id TEXT NOT NULL,
-            time TEXT NOT NULL,
-            start_date TEXT NOT NULL,
-            end_date TEXT NOT NULL,
-            notification_id TEXT NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(survey_id) REFERENCES survey(id) ON DELETE CASCADE,
-            FOREIGN KEY(user_id) REFERENCES user_info(user_id) ON DELETE CASCADE,
-            UNIQUE(survey_id, user_id, time)
-          )
-        ''');
-        debugPrint('알림 스케줄 테이블 생성 완료');
+      // 버전별 순차 업그레이드
+      if (oldVersion < 9) {
+        debugPrint('버전 9로 업그레이드: 다중 설문 지원 스키마 적용');
+        
+        // 기존 테이블 백업 후 새 스키마 적용
+        await _migrateToMultiSurveySchema(db);
+        
+        debugPrint('다중 설문 지원 스키마 업그레이드 완료');
         return;
       }
       
@@ -248,54 +246,127 @@ class DataBaseManager {
       await _createDB(db, newVersion);
     }
   }
+
+  // 다중 설문 지원 스키마로 마이그레이션
+  static Future<void> _migrateToMultiSurveySchema(Database db) async {
+    try {
+      // 1. 기존 survey 테이블에 새 컬럼 추가
+      await db.execute('ALTER TABLE survey ADD COLUMN survey_uuid TEXT');
+      await db.execute('ALTER TABLE survey ADD COLUMN survey_order INTEGER DEFAULT 0');
+      await db.execute('ALTER TABLE survey ADD COLUMN is_active INTEGER DEFAULT 1');
+      
+      // 2. 기존 데이터에 UUID 생성
+      final existingSurveys = await db.query('survey');
+      for (int i = 0; i < existingSurveys.length; i++) {
+        final survey = existingSurveys[i];
+        final surveyId = survey['id'] as int;
+        final uuid = 'survey_${surveyId}_${DateTime.now().millisecondsSinceEpoch}';
+        
+        await db.update(
+          'survey',
+          {
+            'survey_uuid': uuid,
+            'survey_order': i,
+          },
+          where: 'id = ?',
+          whereArgs: [surveyId],
+        );
+      }
+      
+      // 3. UUID 컬럼을 NOT NULL로 변경하기 위해 임시 테이블 사용
+      await db.execute('''
+        CREATE TABLE survey_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          survey_uuid TEXT NOT NULL UNIQUE,
+          survey_name TEXT NOT NULL,
+          survey_description TEXT,
+          start_date TEXT,
+          end_date TEXT,
+          survey_order INTEGER DEFAULT 0,
+          is_active INTEGER DEFAULT 1,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+      ''');
+      
+      // 4. 데이터 복사
+      await db.execute('''
+        INSERT INTO survey_new (id, survey_uuid, survey_name, survey_description, 
+                               start_date, end_date, survey_order, is_active, created_at, updated_at)
+        SELECT id, survey_uuid, survey_name, survey_description, 
+               start_date, end_date, survey_order, is_active, created_at, updated_at
+        FROM survey WHERE survey_uuid IS NOT NULL
+      ''');
+      
+      // 5. 기존 테이블 삭제 후 새 테이블로 교체
+      await db.execute('DROP TABLE survey');
+      await db.execute('ALTER TABLE survey_new RENAME TO survey');
+      
+      // 6. 인덱스 생성
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_survey_uuid ON survey(survey_uuid)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_survey_order ON survey(survey_order)');
+      
+      // 7. 기타 인덱스 생성
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_survey_status_date ON survey_status(survey_date, time)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_survey_response_date ON survey_response(survey_date)');
+      
+      debugPrint('다중 설문 스키마 마이그레이션 완료');
+    } catch (e) {
+      debugPrint('스키마 마이그레이션 중 오류: $e');
+      // 마이그레이션 실패 시 전체 재생성
+      rethrow;
+    }
+  }
   
   // 유저 정보 저장 (단일 사용자 가정)
   static Future<void> saveUserInfo({ required String userId, String? userName }) async {
-  final db = await database;
-  final now = DateTime.now().toIso8601String();
-  
-  try {
-    // 기존 사용자 정보가 있는지 확인
-    final existingUser = await db.query(
-      'user_info',
-      where: 'user_id = ?',
-      whereArgs: [userId],
-    );
+    final db = await database;
+    final now = DateTime.now().toIso8601String();
     
-    if (existingUser.isNotEmpty) {
-      // 기존 사용자 정보 업데이트
-      await db.update(
+    try {
+      // 기존 사용자 정보가 있는지 확인
+      final existingUser = await db.query(
         'user_info',
-        {
-          'user_name': userName ?? 'user',
-          'updated_at': now,
-        },
         where: 'user_id = ?',
         whereArgs: [userId],
       );
-      debugPrint('사용자 정보 업데이트 완료: $userId');
-    } else {
-      // 새 사용자 정보 추가
-      await db.insert('user_info', {
-        'user_id': userId,
-        'user_name': userName ?? 'user',
-        'is_active': 1,
-        'created_at': now,
-        'updated_at': now,
-      });
-      debugPrint('새 사용자 정보 추가 완료: $userId');
+      
+      if (existingUser.isNotEmpty) {
+        // 기존 사용자 정보 업데이트
+        await db.update(
+          'user_info',
+          {
+            'user_name': userName ?? 'user',
+            'updated_at': now,
+          },
+          where: 'user_id = ?',
+          whereArgs: [userId],
+        );
+        debugPrint('사용자 정보 업데이트 완료: $userId');
+      } else {
+        // 새 사용자 정보 추가
+        await db.insert('user_info', {
+          'user_id': userId,
+          'user_name': userName ?? 'user',
+          'is_active': 1,
+          'created_at': now,
+          'updated_at': now,
+        });
+        debugPrint('새 사용자 정보 추가 완료: $userId');
+      }
+    } catch (e) {
+      debugPrint('사용자 정보 저장 오류: $e');
     }
-  } catch (e) {
-    debugPrint('사용자 정보 저장 오류: $e');
   }
-}
 
-  // API 응답 데이터를 정규화하여 DB에 저장 (JSON 비교 방식)
+  // API 응답 데이터를 정규화하여 DB에 저장 (다중 설문 지원)
   static Future<({int newRecords, int updatedRecords})> saveSurveyDataFromApi(String userId, Map<String, dynamic> data) async {
     final db = await database;
     final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
 
-    // 변경 사항 추적을 위한 변수
+    // 전체 변경 사항 추적을 위한 변수
+    int totalNewRecords = 0;
+    int totalUpdatedRecords = 0;
     
     try {
       // 1. API 응답 데이터에서 설문 정보 추출
@@ -304,31 +375,77 @@ class DataBaseManager {
         return (newRecords: 0, updatedRecords: 0);
       }
       
-      // 2. 현재 데이터베이스에 저장된 설문 데이터 조회
-      final existingSurveyData = await _getCurrentSurveyData(db, userId);
+      if (enableDebugLogs) {
+        debugPrint('처리할 설문 개수: ${surveys.length}개');
+      }
       
-      // 3. 새 데이터와 기존 데이터 비교
-      final comparisonResult = await _compareSurveyData(
-        existingSurveyData, 
-        surveys.first as Map<String, dynamic>, 
-        userId, 
-        today
-      );
+      // 2. 각 설문을 순회하여 처리
+      for (int i = 0; i < surveys.length; i++) {
+        final surveyData = surveys[i];
+        if (surveyData == null || surveyData is! Map<String, dynamic>) {
+          if (enableDebugLogs) {
+            debugPrint('설문 $i: 잘못된 데이터 형식, 건너뜀');
+          }
+          continue;
+        }
+        
+        if (enableDebugLogs) {
+          debugPrint('\n=== 설문 ${i + 1}/${surveys.length} 처리 시작 ===');
+        }
+        
+        // 3. 설문 UUID 생성 (고유 식별자)
+        final surveyInfo = surveyData['surveyInfo'] as Map<String, dynamic>?;
+        final surveyName = surveyInfo?['surveyName'] ?? '설문조사';
+        final surveyUuid = 'survey_${i}_${surveyName.hashCode}_${DateTime.now().millisecondsSinceEpoch}';
+        
+        // 4. 현재 데이터베이스에 저장된 설문 데이터 조회
+        final existingSurveyData = await _getCurrentSurveyDataByOrder(db, userId, i);
+        
+        // 5. 새 데이터와 기존 데이터 비교
+        final comparisonResult = await _compareSurveyData(
+          existingSurveyData, 
+          surveyData, 
+          userId, 
+          today,
+          surveyIndex: i,
+          surveyUuid: surveyUuid,
+        );
+        
+        totalNewRecords += comparisonResult.newRecords;
+        totalUpdatedRecords += comparisonResult.updatedRecords;
+        
+        if (enableDebugLogs) {
+          debugPrint('설문 ${i + 1} 완료: 새 레코드 ${comparisonResult.newRecords}개, 업데이트 ${comparisonResult.updatedRecords}개');
+        }
+      }
       
-      return (newRecords: comparisonResult.newRecords, updatedRecords: comparisonResult.updatedRecords);
+      if (enableDebugLogs) {
+        debugPrint('\n=== 전체 설문 처리 완료 ===');
+        debugPrint('총 새 레코드: $totalNewRecords개');
+        debugPrint('총 업데이트: $totalUpdatedRecords개');
+      }
+      
+      return (newRecords: totalNewRecords, updatedRecords: totalUpdatedRecords);
+      
     } catch (e) {
       debugPrint('API 설문 데이터 저장 중 오류: $e');
-      return (newRecords: 0, updatedRecords: 0);
+      return (newRecords: totalNewRecords, updatedRecords: totalUpdatedRecords);
     }
   }
   
-  // 현재 데이터베이스에 저장된 설문 데이터를 조회하는 메서드
-  static Future<Map<String, dynamic>> _getCurrentSurveyData(Database db, String userId) async {
+  // 설문 순서별로 기존 데이터 조회
+  static Future<Map<String, dynamic>> _getCurrentSurveyDataByOrder(Database db, String userId, int surveyOrder) async {
     final result = <String, dynamic>{};
     
     try {
-      // 1. 설문 기본 정보 조회
-      final surveys = await db.query('survey');
+      // 1. 설문 기본 정보 조회 (순서별)
+      final surveys = await db.query(
+        'survey',
+        where: 'survey_order = ?',
+        whereArgs: [surveyOrder],
+        limit: 1,
+      );
+      
       if (surveys.isNotEmpty) {
         final surveyId = surveys.first['id'] as int;
         result['survey'] = surveys.first;
@@ -411,18 +528,19 @@ class DataBaseManager {
         result['surveyByTime'] = surveyByTime.values.toList();
       }
     } catch (e) {
-      debugPrint('기존 설문 데이터 조회 중 오류: $e');
+      debugPrint('기존 설문 데이터 조회 중 오류 (순서: $surveyOrder): $e');
     }
     
     return result;
   }
   
-  // 새 데이터와 기존 데이터를 비교하는 메서드
+  // 새 데이터와 기존 데이터를 비교하는 메서드 (다중 설문 지원)
   static Future<({int newRecords, int updatedRecords})> _compareSurveyData(
     Map<String, dynamic> existingData,
     Map<String, dynamic> newData,
     String userId,
-    String today
+    String today,
+    {required int surveyIndex, required String surveyUuid}
   ) async {
     final db = await database;
     int newRecords = 0;
@@ -470,23 +588,26 @@ class DataBaseManager {
             updatedRecords++;
             
             if (enableDebugLogs) {
-              debugPrint('설문 기본 정보 업데이트 (ID: $surveyId)');
+              debugPrint('설문 기본 정보 업데이트 (ID: $surveyId, 순서: $surveyIndex)');
             }
           }
         } else {
           // 새 설문 정보 추가
           surveyId = await txn.insert('survey', {
+            'survey_uuid': surveyUuid,
             'survey_name': surveyName,
             'survey_description': surveyDescription,
             'start_date': startDate,
             'end_date': endDate,
+            'survey_order': surveyIndex,
+            'is_active': 1,
             'created_at': DateTime.now().toIso8601String(),
             'updated_at': DateTime.now().toIso8601String(),
           });
           newRecords++;
           
           if (enableDebugLogs) {
-            debugPrint('새 설문 정보 추가 (ID: $surveyId)');
+            debugPrint('새 설문 정보 추가 (ID: $surveyId, UUID: $surveyUuid, 순서: $surveyIndex)');
           }
         }
         
@@ -509,7 +630,7 @@ class DataBaseManager {
               newRecords++;
               
               if (enableDebugLogs) {
-                debugPrint('새 알림 시간 추가: $time');
+                debugPrint('새 알림 시간 추가: $time (Survey ID: $surveyId)');
               }
             }
           }
@@ -526,7 +647,7 @@ class DataBaseManager {
               updatedRecords++;
               
               if (enableDebugLogs) {
-                debugPrint('알림 시간 삭제: $existingTime');
+                debugPrint('알림 시간 삭제: $existingTime (Survey ID: $surveyId)');
               }
             }
           }
@@ -565,7 +686,7 @@ class DataBaseManager {
                       updatedRecords++;
                       
                       if (enableDebugLogs) {
-                        debugPrint('설문 상태 업데이트: $timeStr (제출: $isSubmitted)');
+                        debugPrint('설문 상태 업데이트: $timeStr (제출: $isSubmitted, Survey ID: $surveyId)');
                       }
                     }
                     break;
@@ -585,7 +706,7 @@ class DataBaseManager {
                   newRecords++;
                   
                   if (enableDebugLogs) {
-                    debugPrint('새 설문 상태 추가: $timeStr');
+                    debugPrint('새 설문 상태 추가: $timeStr (Survey ID: $surveyId)');
                   }
                 }
               }
@@ -594,7 +715,6 @@ class DataBaseManager {
         }
         
         // 4. 설문 내용(페이지 및 질문) 비교 및 업데이트
-        // 이 부분은 복잡하므로 내용 기반 해시를 사용하여 비교
         final surveyByTime = newData['surveyByTime'];
         if (surveyByTime != null && surveyByTime is List) {
           // 기존 설문 내용을 해시맵으로 변환
@@ -603,7 +723,7 @@ class DataBaseManager {
           final newContentHash = _generateContentHash(surveyByTime);
           
           if (enableDebugLogs) {
-            debugPrint('설문 내용 해시 비교:');
+            debugPrint('설문 내용 해시 비교 (Survey ID: $surveyId):');
             debugPrint('  기존 해시: $existingContentHash');
             debugPrint('  새 해시: $newContentHash');
           }
@@ -611,12 +731,16 @@ class DataBaseManager {
           // 내용이 다른 경우에만 업데이트
           if (existingContentHash != newContentHash) {
             if (enableDebugLogs) {
-              debugPrint('설문 내용 변경 감지 (ID 제외한 내용 비교)');
+              debugPrint('설문 내용 변경 감지 (Survey ID: $surveyId)');
             }
             
             try {
               // 기존 페이지 및 질문 정보 조회
-              final existingPages = await txn.query('survey_page');
+              final existingPages = await txn.query(
+                'survey_page',
+                where: 'survey_id = ?',
+                whereArgs: [surveyId]
+              );
               final existingQuestions = await txn.query('survey_question');
               
               // 페이지 ID와 질문 ID를 맵으로 변환하여 빠른 조회 가능하게 함
@@ -632,7 +756,7 @@ class DataBaseManager {
               }
               
               if (enableDebugLogs) {
-                debugPrint('기존 데이터 조회 완료: ${existingPages.length}개 페이지, ${existingQuestions.length}개 질문');
+                debugPrint('기존 데이터 조회 완료 (Survey ID: $surveyId): ${existingPages.length}개 페이지, ${existingQuestions.length}개 질문');
               }
               
               // 새 데이터와 기존 데이터 비교를 위한 변수
@@ -640,201 +764,199 @@ class DataBaseManager {
               final updatedQuestionIds = <String>{};
               
               if (enableDebugLogs) {
-                debugPrint('설문 내용 upsert 시작');
+                debugPrint('설문 내용 upsert 시작 (Survey ID: $surveyId)');
               }
             
-            // 새 페이지 및 질문 upsert
-            for (final timeSlot in surveyByTime) {
-              if (timeSlot == null || timeSlot is! Map<String, dynamic>) {
-                continue;
-              }
-              
-              final time = timeSlot['time'];
-              if (time == null) {
-                continue;
-              }
-              final timeStr = time.toString();
-              
-              final pages = timeSlot['pages'];
-              if (pages == null || pages is! List) {
-                continue;
-              }
-              
-              for (final pageData in pages) {
-                if (pageData == null || pageData is! Map<String, dynamic>) {
+              // 새 페이지 및 질문 upsert
+              for (final timeSlot in surveyByTime) {
+                if (timeSlot == null || timeSlot is! Map<String, dynamic>) {
                   continue;
                 }
                 
-                final pageNumber = pageData['page'];
-                final title = pageData['title'];
+                final time = timeSlot['time'];
+                if (time == null) {
+                  continue;
+                }
+                final timeStr = time.toString();
                 
-                if (pageNumber == null) {
+                final pages = timeSlot['pages'];
+                if (pages == null || pages is! List) {
                   continue;
                 }
                 
-                // 페이지 키 생성 (survey_id + time + page_number)
-                final pageKey = '${surveyId}_${timeStr}_$pageNumber';
-                
-                int pageId;
-                if (existingPageMap.containsKey(pageKey)) {
-                  // 기존 페이지 업데이트
-                  final existingPage = existingPageMap[pageKey]!;
-                  pageId = existingPage['id'] as int;
+                for (final pageData in pages) {
+                  if (pageData == null || pageData is! Map<String, dynamic>) {
+                    continue;
+                  }
                   
-                  // 제목이 변경된 경우에만 업데이트
-                  if (existingPage['title'] != title) {
-                    await txn.update(
-                      'survey_page',
-                      {'title': title ?? ''},
-                      where: 'id = ?',
-                      whereArgs: [pageId]
-                    );
-                    updatedRecords++;
-                    updatedPageIds.add(pageId);
+                  final pageNumber = pageData['page'];
+                  final title = pageData['title'];
+                  
+                  if (pageNumber == null) {
+                    continue;
+                  }
+                  
+                  // 페이지 키 생성 (survey_id + time + page_number)
+                  final pageKey = '${surveyId}_${timeStr}_$pageNumber';
+                  
+                  int pageId;
+                  if (existingPageMap.containsKey(pageKey)) {
+                    // 기존 페이지 업데이트
+                    final existingPage = existingPageMap[pageKey]!;
+                    pageId = existingPage['id'] as int;
+                    
+                    // 제목이 변경된 경우에만 업데이트
+                    if (existingPage['title'] != title) {
+                      await txn.update(
+                        'survey_page',
+                        {'title': title ?? ''},
+                        where: 'id = ?',
+                        whereArgs: [pageId]
+                      );
+                      updatedRecords++;
+                      updatedPageIds.add(pageId);
+                      
+                      if (enableDebugLogs) {
+                        debugPrint('페이지 업데이트 (ID: $pageId, Survey ID: $surveyId): 제목 변경');
+                      }
+                    }
+                  } else {
+                    // 새 페이지 추가
+                    pageId = await txn.insert('survey_page', {
+                      'survey_id': surveyId,
+                      'time': timeStr,
+                      'page_number': pageNumber,
+                      'title': title ?? '',
+                    });
+                    newRecords++;
                     
                     if (enableDebugLogs) {
-                      debugPrint('페이지 업데이트 (ID: $pageId): 제목 변경');
+                      debugPrint('새 페이지 추가 (ID: $pageId, Survey ID: $surveyId): $timeStr, 페이지 $pageNumber');
                     }
                   }
-                } else {
-                  // 새 페이지 추가
-                  pageId = await txn.insert('survey_page', {
-                    'survey_id': surveyId,
-                    'time': timeStr,
-                    'page_number': pageNumber,
-                    'title': title ?? '',
-                  });
-                  newRecords++;
                   
-                  if (enableDebugLogs) {
-                    debugPrint('새 페이지 추가 (ID: $pageId): $timeStr, 페이지 $pageNumber');
-                  }
-                }
-                
-                final questions = pageData['questions'];
-                if (questions != null && questions is List) {
-                  for (final qData in questions) {
-                    if (qData == null || qData is! Map<String, dynamic>) {
-                      continue;
-                    }
-                    
-                    final id = qData['id'];
-                    if (id == null) {
-                      continue;
-                    }
-                    
-                    // 질문 정규화
-                    String normalizeText(String? text) {
-                      if (text == null) return '';
-                      return text.trim().replaceAll(RegExp(r'\s+'), ' ');
-                    }
-                    
-                    final questionText = normalizeText(qData['question']?.toString());
-                    final questionType = qData['type']?.toString() ?? '';
-                    final inputOptions = qData['input'] != null ? jsonEncode(qData['input']) : '[]';
-                    
-                    // followUp 필드 처리 (ID 참조 업데이트)
-                    dynamic followUpData = qData['followUp'];
-                    if (followUpData != null && followUpData is Map<String, dynamic> && 
-                        followUpData.containsKey('then') && followUpData['then'] is List) {
-                      // 원래 ID를 시간대를 포함한 고유 ID로 변환
-                      final thenList = followUpData['then'] as List;
-                      final updatedThenList = thenList.map((item) {
-                        if (item != null) {
-                          return '${timeStr}_${item.toString()}';
-                        }
-                        return item;
-                      }).toList();
-                      
-                      // 업데이트된 ID로 followUp 데이터 재구성
-                      followUpData = Map<String, dynamic>.from(followUpData);
-                      followUpData['then'] = updatedThenList;
-                    }
-                    
-                    final followUp = followUpData != null ? jsonEncode(followUpData) : 'null';
-                    
-                    // 시간대를 포함한 고유 ID 생성 (시간대_원본ID 형식)
-                    final uniqueId = '${timeStr}_${id.toString()}';
-                    
-                    // 질문 데이터
-                    final questionData = {
-                      'page_id': pageId,
-                      'question_text': questionText,
-                      'question_type': questionType,
-                      'input_options': inputOptions,
-                      'follow_up': followUp,
-                    };
-                    
-                    if (existingQuestionMap.containsKey(uniqueId)) {
-                      // 기존 질문 업데이트
-                      final existingQuestion = existingQuestionMap[uniqueId]!;
-                      
-                      // 내용이 변경된 경우에만 업데이트
-                      bool hasChanges = false;
-                      if (existingQuestion['page_id'] != pageId) hasChanges = true;
-                      if (existingQuestion['question_text'] != questionText) hasChanges = true;
-                      if (existingQuestion['question_type'] != questionType) hasChanges = true;
-                      if (existingQuestion['input_options'] != inputOptions) hasChanges = true;
-                      if (existingQuestion['follow_up'] != followUp) hasChanges = true;
-                      
-                      if (hasChanges) {
-                        await txn.update(
-                          'survey_question',
-                          questionData,
-                          where: 'id = ?',
-                          whereArgs: [uniqueId]
-                        );
-                        updatedRecords++;
-                        updatedQuestionIds.add(uniqueId);
-                        
-                        if (enableDebugLogs && updatedRecords % 10 == 0) {
-                          debugPrint('질문 업데이트 진행 중: $updatedRecords개 완료');
-                        }
+                  final questions = pageData['questions'];
+                  if (questions != null && questions is List) {
+                    for (final qData in questions) {
+                      if (qData == null || qData is! Map<String, dynamic>) {
+                        continue;
                       }
-                    } else {
-                      // 새 질문 추가
-                      try {
-                        await txn.insert('survey_question', {
-                          'id': uniqueId,
-                          ...questionData,
-                        });
-                        newRecords++;
+                      
+                      final id = qData['id'];
+                      if (id == null) {
+                        continue;
+                      }
+                      
+                      // 질문 정규화
+                      String normalizeText(String? text) {
+                        if (text == null) return '';
+                        return text.trim().replaceAll(RegExp(r'\s+'), ' ');
+                      }
+                      
+                      final questionText = normalizeText(qData['question']?.toString());
+                      final questionType = qData['type']?.toString() ?? '';
+                      final inputOptions = qData['input'] != null ? jsonEncode(qData['input']) : '[]';
+                      
+                      // followUp 필드 처리 (ID 참조 업데이트)
+                      dynamic followUpData = qData['followUp'];
+                      if (followUpData != null && followUpData is Map<String, dynamic> && 
+                          followUpData.containsKey('then') && followUpData['then'] is List) {
+                        // 원래 ID를 시간대와 설문 ID를 포함한 고유 ID로 변환
+                        final thenList = followUpData['then'] as List;
+                        final updatedThenList = thenList.map((item) {
+                          if (item != null) {
+                            return '${surveyId}_${timeStr}_${item.toString()}';
+                          }
+                          return item;
+                        }).toList();
                         
-                        if (enableDebugLogs && newRecords % 10 == 0) {
-                          debugPrint('질문 추가 진행 중: $newRecords개 완료');
+                        // 업데이트된 ID로 followUp 데이터 재구성
+                        followUpData = Map<String, dynamic>.from(followUpData);
+                        followUpData['then'] = updatedThenList;
+                      }
+                      
+                      final followUp = followUpData != null ? jsonEncode(followUpData) : 'null';
+                      
+                      // 설문 ID, 시간대, 원본 ID를 포함한 고유 ID 생성
+                      final uniqueId = '${surveyId}_${timeStr}_${id.toString()}';
+                      
+                      // 질문 데이터
+                      final questionData = {
+                        'page_id': pageId,
+                        'question_text': questionText,
+                        'question_type': questionType,
+                        'input_options': inputOptions,
+                        'follow_up': followUp,
+                      };
+                      
+                      if (existingQuestionMap.containsKey(uniqueId)) {
+                        // 기존 질문 업데이트
+                        final existingQuestion = existingQuestionMap[uniqueId]!;
+                        
+                        // 내용이 변경된 경우에만 업데이트
+                        bool hasChanges = false;
+                        if (existingQuestion['page_id'] != pageId) hasChanges = true;
+                        if (existingQuestion['question_text'] != questionText) hasChanges = true;
+                        if (existingQuestion['question_type'] != questionType) hasChanges = true;
+                        if (existingQuestion['input_options'] != inputOptions) hasChanges = true;
+                        if (existingQuestion['follow_up'] != followUp) hasChanges = true;
+                        
+                        if (hasChanges) {
+                          await txn.update(
+                            'survey_question',
+                            questionData,
+                            where: 'id = ?',
+                            whereArgs: [uniqueId]
+                          );
+                          updatedRecords++;
+                          updatedQuestionIds.add(uniqueId);
+                          
+                          if (enableDebugLogs && updatedRecords % 10 == 0) {
+                            debugPrint('질문 업데이트 진행 중 (Survey ID: $surveyId): $updatedRecords개 완료');
+                          }
                         }
-                      } catch (e) {
-                        debugPrint('질문 추가 중 오류 (ID: $uniqueId): $e');
+                      } else {
+                        // 새 질문 추가
+                        try {
+                          await txn.insert('survey_question', {
+                            'id': uniqueId,
+                            ...questionData,
+                          });
+                          newRecords++;
+                          
+                          if (enableDebugLogs && newRecords % 10 == 0) {
+                            debugPrint('질문 추가 진행 중 (Survey ID: $surveyId): $newRecords개 완료');
+                          }
+                        } catch (e) {
+                          debugPrint('질문 추가 중 오류 (ID: $uniqueId, Survey ID: $surveyId): $e');
+                        }
                       }
                     }
                   }
                 }
               }
+              
+              if (enableDebugLogs) {
+                debugPrint('설문 내용 upsert 완료 (Survey ID: $surveyId)');
+                debugPrint('  업데이트된 페이지: ${updatedPageIds.length}개');
+                debugPrint('  업데이트된 질문: ${updatedQuestionIds.length}개');
+              }
+            } catch (e) {
+              debugPrint('설문 내용 비교 중 오류 (Survey ID: $surveyId): $e');
             }
-            
-            if (enableDebugLogs) {
-              debugPrint('설문 내용 upsert 완료');
-              debugPrint('  업데이트된 페이지: ${updatedPageIds.length}개');
-              debugPrint('  업데이트된 질문: ${updatedQuestionIds.length}개');
-              debugPrint('  새로 추가된 레코드: $newRecords개');
-            }
-          } catch (e) {
-            debugPrint('설문 내용 비교 중 오류: $e');
-          }
-          
           } else if (enableDebugLogs) {
-            debugPrint('설문 내용 변경 없음 (해시 일치)');
+            debugPrint('설문 내용 변경 없음 (Survey ID: $surveyId, 해시 일치)');
           }
         }
       }
       
       // 5. 요약 정보 출력
       if (enableDebugLogs) {
-        debugPrint('\n===== 데이터 저장 요약 =====');
+        debugPrint('\n===== 설문 ${surveyIndex + 1} 저장 요약 =====');
         debugPrint('새로운 레코드: $newRecords개');
         debugPrint('업데이트된 레코드: $updatedRecords개');
         debugPrint('총 변경 사항: ${newRecords + updatedRecords}개');
-        debugPrint('==========================\n');
+        debugPrint('================================\n');
       }
     });
     
@@ -910,23 +1032,215 @@ class DataBaseManager {
     return userInfo?['user_name'] as String? ?? '';
   }
   
-  // 특정 날짜의 설문 상태 목록 조회 (단일 사용자 가정)
-  static Future<List<Map<String, dynamic>>> getSurveyStatusByDate({
+  // 모든 설문 조회 (순서별 정렬)
+  static Future<List<Map<String, dynamic>>> getAllSurveys() async {
+    final db = await database;
+    return await db.query(
+      'survey',
+      where: 'is_active = ?',
+      whereArgs: [1],
+      orderBy: 'survey_order ASC',
+    );
+  }
+  
+  // 특정 설문의 알림 시간 조회
+  static Future<List<String>> getSurveyNotificationTimes(int surveyId) async {
+    final db = await database;
+    final results = await db.query(
+      'survey_notification_times',
+      columns: ['time'],
+      where: 'survey_id = ?',
+      whereArgs: [surveyId],
+      orderBy: 'time ASC',
+    );
+    return results.map((row) => row['time'] as String).toList();
+  }
+  
+  // 특정 날짜의 모든 설문 상태 조회
+  static Future<List<Map<String, dynamic>>> getAllSurveyStatusByDate({
     required String userId,
     required String surveyDate,
   }) async {
     final db = await database;
     
-    // 단일 사용자 가정이므로 survey_id 조건 없이 조회
+    return await db.rawQuery('''
+      SELECT ss.*, s.survey_name, s.survey_uuid, s.survey_order
+      FROM survey_status ss
+      JOIN survey s ON ss.survey_id = s.id
+      WHERE ss.user_id = ? AND ss.survey_date = ? AND s.is_active = 1
+      ORDER BY s.survey_order ASC, ss.time ASC
+    ''', [userId, surveyDate]);
+  }
+  
+  // 특정 설문의 특정 날짜 상태 조회
+  static Future<List<Map<String, dynamic>>> getSurveyStatusByDate({
+    required String userId,
+    required String surveyDate,
+    int? surveyId,
+  }) async {
+    final db = await database;
+    
+    String whereClause = 'user_id = ? AND survey_date = ?';
+    List<dynamic> whereArgs = [userId, surveyDate];
+    
+    if (surveyId != null) {
+      whereClause += ' AND survey_id = ?';
+      whereArgs.add(surveyId);
+    }
+    
     return await db.query(
       'survey_status',
-      where: 'user_id = ? AND survey_date = ?',
-      whereArgs: [userId, surveyDate],
-      orderBy: 'time ASC', // 시간 순으로 정렬
+      where: whereClause,
+      whereArgs: whereArgs,
+      orderBy: 'time ASC',
     );
   }
-
-
+  
+  // 설문 응답 저장
+  static Future<void> saveSurveyResponse({
+    required String questionId,
+    required String userId,
+    required String surveyDate,
+    required String answer,
+  }) async {
+    final db = await database;
+    
+    try {
+      await db.insert(
+        'survey_response',
+        {
+          'question_id': questionId,
+          'user_id': userId,
+          'survey_date': surveyDate,
+          'answer': answer,
+          'submitted_at': DateTime.now().toIso8601String(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      
+      if (enableDebugLogs) {
+        debugPrint('설문 응답 저장 완료: $questionId');
+      }
+    } catch (e) {
+      debugPrint('설문 응답 저장 중 오류: $e');
+    }
+  }
+  
+  // 특정 날짜의 설문 응답 조회
+  static Future<List<Map<String, dynamic>>> getSurveyResponses({
+    required String userId,
+    required String surveyDate,
+    int? surveyId,
+  }) async {
+    final db = await database;
+    
+    String query = '''
+      SELECT sr.*, sq.question_text, sq.question_type, sp.title as page_title
+      FROM survey_response sr
+      JOIN survey_question sq ON sr.question_id = sq.id
+      JOIN survey_page sp ON sq.page_id = sp.id
+    ''';
+    
+    List<dynamic> whereArgs = [userId, surveyDate];
+    String whereClause = 'sr.user_id = ? AND sr.survey_date = ?';
+    
+    if (surveyId != null) {
+      query += ' JOIN survey s ON sp.survey_id = s.id';
+      whereClause += ' AND s.id = ?';
+      whereArgs.add(surveyId);
+    }
+    
+    query += ' WHERE $whereClause ORDER BY sr.submitted_at DESC';
+    
+    return await db.rawQuery(query, whereArgs);
+  }
+  
+  // 알림 스케줄 저장
+  static Future<void> saveNotificationSchedule({
+    required int surveyId,
+    required String userId,
+    required String time,
+    required String startDate,
+    required String endDate,
+    required String notificationId,
+  }) async {
+    final db = await database;
+    
+    try {
+      await db.insert(
+        'notification_schedule',
+        {
+          'survey_id': surveyId,
+          'user_id': userId,
+          'time': time,
+          'start_date': startDate,
+          'end_date': endDate,
+          'notification_id': notificationId,
+          'created_at': DateTime.now().toIso8601String(),
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      
+      if (enableDebugLogs) {
+        debugPrint('알림 스케줄 저장 완료: Survey ID $surveyId, Time $time');
+      }
+    } catch (e) {
+      debugPrint('알림 스케줄 저장 중 오류: $e');
+    }
+  }
+  
+  // 알림 스케줄 조회
+  static Future<List<Map<String, dynamic>>> getNotificationSchedules({
+    required String userId,
+    int? surveyId,
+  }) async {
+    final db = await database;
+    
+    String whereClause = 'user_id = ?';
+    List<dynamic> whereArgs = [userId];
+    
+    if (surveyId != null) {
+      whereClause += ' AND survey_id = ?';
+      whereArgs.add(surveyId);
+    }
+    
+    return await db.query(
+      'notification_schedule',
+      where: whereClause,
+      whereArgs: whereArgs,
+      orderBy: 'time ASC',
+    );
+  }
+  
+  // 설문 상태 업데이트 (제출 완료 처리)
+  static Future<void> updateSurveyStatus({
+    required int surveyId,
+    required String userId,
+    required String surveyDate,
+    required String time,
+    required bool submitted,
+  }) async {
+    final db = await database;
+    
+    try {
+      await db.update(
+        'survey_status',
+        {
+          'submitted': submitted ? 1 : 0,
+          'submitted_at': submitted ? DateTime.now().toIso8601String() : null,
+        },
+        where: 'survey_id = ? AND user_id = ? AND survey_date = ? AND time = ?',
+        whereArgs: [surveyId, userId, surveyDate, time],
+      );
+      
+      if (enableDebugLogs) {
+        debugPrint('설문 상태 업데이트 완료: Survey ID $surveyId, Time $time, Submitted: $submitted');
+      }
+    } catch (e) {
+      debugPrint('설문 상태 업데이트 중 오류: $e');
+    }
+  }
 
   // =========== 디버깅 메서드 ===========
   
@@ -952,18 +1266,130 @@ class DataBaseManager {
     }
     debugPrint('\n===== END DUMP =====');
   }
+  
+  /// 특정 설문의 모든 데이터 출력 (디버깅용)
+  static Future<void> logSurveyData(int surveyId) async {
+    if (!enableDebugLogs) return;
+    
+    final db = await database;
+    
+    debugPrint('\n===== SURVEY DATA DUMP (ID: $surveyId) =====');
+    
+    // 1. 설문 기본 정보
+    final survey = await db.query('survey', where: 'id = ?', whereArgs: [surveyId]);
+    debugPrint('Survey Info: ${survey.isNotEmpty ? survey.first : 'Not found'}');
+    
+    // 2. 알림 시간
+    final times = await db.query('survey_notification_times', where: 'survey_id = ?', whereArgs: [surveyId]);
+    debugPrint('Notification Times: $times');
+    
+    // 3. 설문 페이지
+    final pages = await db.query('survey_page', where: 'survey_id = ?', whereArgs: [surveyId]);
+    debugPrint('Pages: $pages');
+    
+    // 4. 설문 질문 (페이지별)
+    for (final page in pages) {
+      final pageId = page['id'];
+      final questions = await db.query('survey_question', where: 'page_id = ?', whereArgs: [pageId]);
+      debugPrint('Page $pageId Questions: $questions');
+    }
+    
+    // 5. 설문 상태
+    final status = await db.query('survey_status', where: 'survey_id = ?', whereArgs: [surveyId]);
+    debugPrint('Survey Status: $status');
+    
+    debugPrint('===== END SURVEY DUMP =====\n');
+  }
 
   /// 데이터베이스의 모든 데이터를 삭제
   static Future<void> clearAllData() async {
     final db = await database;
     final tables = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
     
+    // 외래키 제약 조건 해제
+    await db.execute('PRAGMA foreign_keys = OFF');
+    
     for (final table in tables) {
       await db.delete(table['name'] as String);
     }
     
+    // 외래키 제약 조건 다시 활성화
+    await db.execute('PRAGMA foreign_keys = ON');
+    
     if (enableDebugLogs) {
       debugPrint('모든 테이블의 데이터 삭제 완료');
     }
+  }
+  
+  /// 특정 설문 데이터만 삭제
+  static Future<void> clearSurveyData(int surveyId) async {
+    final db = await database;
+    
+    await db.transaction((txn) async {
+      // 외래키 제약조건으로 인해 순서대로 삭제
+      await txn.delete('notification_schedule', where: 'survey_id = ?', whereArgs: [surveyId]);
+      await txn.delete('survey_response', where: 'question_id IN (SELECT sq.id FROM survey_question sq JOIN survey_page sp ON sq.page_id = sp.id WHERE sp.survey_id = ?)', whereArgs: [surveyId]);
+      await txn.delete('survey_question', where: 'page_id IN (SELECT id FROM survey_page WHERE survey_id = ?)', whereArgs: [surveyId]);
+      await txn.delete('survey_page', where: 'survey_id = ?', whereArgs: [surveyId]);
+      await txn.delete('survey_status', where: 'survey_id = ?', whereArgs: [surveyId]);
+      await txn.delete('survey_notification_times', where: 'survey_id = ?', whereArgs: [surveyId]);
+      await txn.delete('survey', where: 'id = ?', whereArgs: [surveyId]);
+    });
+    
+    if (enableDebugLogs) {
+      debugPrint('설문 ID $surveyId 데이터 삭제 완료');
+    }
+  }
+  
+  /// 데이터베이스 통계 정보 출력
+  static Future<void> logDatabaseStats() async {
+    if (!enableDebugLogs) return;
+    
+    final db = await database;
+    
+    debugPrint('\n===== DATABASE STATISTICS =====');
+    
+    // 각 테이블별 레코드 수
+    final tables = ['user_info', 'survey', 'survey_notification_times', 'survey_status', 
+                   'survey_page', 'survey_question', 'survey_response', 'notification_schedule'];
+    
+    for (final table in tables) {
+      try {
+        final result = await db.rawQuery('SELECT COUNT(*) as count FROM $table');
+        final count = result.first['count'];
+        debugPrint('$table: $count records');
+      } catch (e) {
+        debugPrint('$table: Error counting records - $e');
+      }
+    }
+    
+    // 설문별 통계
+    try {
+      final surveyStats = await db.rawQuery('''
+        SELECT s.id, s.survey_name, s.survey_order,
+               COUNT(DISTINCT snt.time) as notification_times_count,
+               COUNT(DISTINCT sp.id) as pages_count,
+               COUNT(DISTINCT sq.id) as questions_count
+        FROM survey s
+        LEFT JOIN survey_notification_times snt ON s.id = snt.survey_id
+        LEFT JOIN survey_page sp ON s.id = sp.survey_id
+        LEFT JOIN survey_question sq ON sp.id = sq.page_id
+        WHERE s.is_active = 1
+        GROUP BY s.id, s.survey_name, s.survey_order
+        ORDER BY s.survey_order
+      ''');
+      
+      debugPrint('\n--- Survey Details ---');
+      for (final stat in surveyStats) {
+        debugPrint('Survey ${stat['survey_order']}: ${stat['survey_name']}');
+        debugPrint('  - ${stat['notification_times_count']} notification times');
+        debugPrint('  - ${stat['pages_count']} pages');
+        debugPrint('  - ${stat['questions_count']} questions');
+      }
+    } catch (e) {
+      debugPrint('Survey statistics error: $e');
+    }
+    
+    debugPrint('===============================\n');
   }
 }

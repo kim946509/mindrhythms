@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import '../feature/api.dart';
 import '../feature/db.dart';
-import '../service/notification_service.dart';
+import '../feature/notification_register.dart';
 import 'home_page.dart';
 import 'login_page.dart';
 

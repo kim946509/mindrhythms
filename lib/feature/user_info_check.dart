@@ -1,4 +1,4 @@
-import '../feature/db.dart';
+import 'db.dart';
 
 class UserInfoCheck {
   static Future<({bool isLoggedIn, String? userId})> check() async {

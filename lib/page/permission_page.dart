@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import '../service/notification_permission_check.dart';
+import '../feature/notification_permission_check.dart';
 import '../widget/common_title.dart';
 import '../widget/common_sub_title.dart';
 import '../widget/common_large_button.dart';

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import '../service/notification_permission_check.dart';
-import '../service/user_info_check.dart';
+import '../feature/notification_permission_check.dart';
+import '../feature/user_info_check.dart';
 import '../widget/common_title.dart';
 import '../widget/common_sub_title.dart';
 import 'permission_page.dart';
