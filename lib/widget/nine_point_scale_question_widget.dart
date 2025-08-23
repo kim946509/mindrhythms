@@ -35,7 +35,7 @@ class _NinePointScaleQuestionWidgetState
   }
 
   Widget _buildEmotionScale() {
-    final selected = widget.selected ?? 0;
+    final selected = widget.selected;  // null일 수 있음
 
     final List<String> labels = [
       '전혀 아니다',
@@ -55,7 +55,7 @@ class _NinePointScaleQuestionWidgetState
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: List.generate(9, (scoreIndex) {
-        final isSelected = selected == scoreIndex + 1;
+        final isSelected = selected != null && selected == scoreIndex;  // null이 아닐 때만 선택 상태 확인
         final isNegative = scoreIndex < 4;
         final isCenter = scoreIndex == 4;
 
@@ -68,7 +68,7 @@ class _NinePointScaleQuestionWidgetState
 
         return GestureDetector(
           onTap: () {
-            widget.onChanged(scoreIndex + 1);
+            widget.onChanged(scoreIndex);  // 0부터 8까지
           },
           child: Column(
             children: [
