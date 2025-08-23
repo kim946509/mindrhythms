@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:mindrhythms/core/app_context.dart';
 import 'package:mindrhythms/page/splash_page.dart';
+import 'package:mindrhythms/service/notification_service.dart';
 
-void main() {
-  // AppContext 초기화
-  Get.put(AppContext());
+void main() async {
+  // Flutter 초기화 보장
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // 알림 서비스 초기화
+  await NotificationService.initialize();
+  
+  // GetX 컨트롤러 초기화
+  Get.put(SplashController());
   
   runApp(const MyApp());
 }

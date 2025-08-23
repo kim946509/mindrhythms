@@ -1,88 +1,64 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:mindrhythms/core/view_controller.dart';
-import 'package:mindrhythms/feature/service/splash_service.dart';
+import '../service/notification_permission_check.dart';
+import '../service/user_info_check.dart';
+import '../widget/common_title.dart';
+import '../widget/common_sub_title.dart';
+import 'permission_page.dart';
+import 'login_page.dart';
+import 'user_info_page.dart';
 
-class SplashController extends ViewController {
-  // 스플래시 관련 데이터
-  String appName = '마음리듬';
-  String subtitle = '당신의 마음을 듣다';
-  String loadingMessage = '마음리듬을 시작합니다...';
-  bool isLoading = true;
-  
-  // 진행 상황 관련
-  int currentStep = 0;
-  int totalSteps = 3;
+class SplashController extends GetxController with WidgetsBindingObserver {
+  var notification = false;
+  var userInfo = false;
+  var isLoading = true;
+  var loadingMessage = '초기화 중...';
+  String? userId;
 
   @override
-  Future<void> init() async {
-    // 화면이 뜨기 전 데이터 준비
-    isLoading = true;
-    currentStep = 0;
-    loadingMessage = '마음리듬을 시작합니다...';
-    update();
-
-    // SimpleSplashService를 통한 3단계 초기화
-    final initResult = await SplashService.initializeApp( 
-      onProgress: (message, step, total) {
-        print('💡 Progress Update: Step $step/$total - $message');
-        loadingMessage = message;
-        currentStep = step;
-        totalSteps = total;
-        update();
-      },
-    );
-
-        // 초기화 결과를 컨트롤러 변수에 저장
-    final permissionData = initResult['permission'] as Map<String, dynamic>;
-    final userData = initResult['user'] as Map<String, dynamic>;
-    final loginStatus = initResult['loginStatus'] as Map<String, dynamic>;
-
-    // Context에 데이터 저장
-    setContextData('permission', permissionData);
-    setContextData('user', userData);
-    setContextData('loginStatus', loginStatus);
+  void onInit() {
+    super.onInit();
+    WidgetsBinding.instance.addObserver(this);
+    checkPermissions();
   }
 
   @override
-  Future<void> execute() async {
-    // 화면 표시 후 실행할 작업
-    print('🎯 Execute started - determining next route');
-    
-    // 마지막 완료 메시지를 2초 보여줌
-    await Future.delayed(const Duration(seconds: 2));
-    
-    // 이제 로딩 완료
-    isLoading = false;
+  void onClose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.onClose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      checkPermissions();
+    }
+  }
+
+  Future<void> checkPermissions() async {
+    isLoading = true;
     update();
     
-    // 1초 더 대기
-    await Future.delayed(const Duration(seconds: 1));
+    // 알림 권한 체크 (상태만 확인, 요청하지 않음)
+    loadingMessage = '알림 권한을 확인하고 있습니다...';
+    update();
+    await Future.delayed(const Duration(milliseconds: 500)); // 메시지 표시를 위한 지연
     
-    // 초기화 결과 출력
-    final permissionData = getContextData<Map>('permission') ?? {};
-    final userData = getContextData<Map>('user') ?? {};
-    final loginStatus = getContextData<Map>('loginStatus') ?? {};
+    notification = await NotificationPermissionCheck.checkStatus();
     
-    SplashService.printInitializationResult(
-      permissionData: permissionData as Map<String, dynamic>,
-      userData: userData as Map<String, dynamic>,
-      loginStatus: loginStatus as Map<String, dynamic>,
-    );
-    
-    // 로그인 상태에 따라 라우팅
-    final nextRoute = loginStatus['nextRoute'] ?? '/login';
-    print('🚀 다음 화면으로 이동: $nextRoute');
-    
-    // TODO: 실제 라우팅 구현
-    // Get.offNamed(nextRoute);
-    
-    // 임시: 콘솔에만 출력
-    if (loginStatus['shouldAutoLogin'] == true) {
-      print('✅ 자동 로그인 - 홈 화면으로 이동');
-    } else {
-      print('🔐 로그인 필요 - 로그인 화면으로 이동');
+    if (notification) {
+      // 유저 정보 체크
+      loadingMessage = '사용자 정보를 확인하고 있습니다...';
+      update();
+      await Future.delayed(const Duration(milliseconds: 500)); // 메시지 표시를 위한 지연
+      
+      final userCheck = await UserInfoCheck.check();
+      userInfo = userCheck.isLoggedIn;
+      userId = userCheck.userId;
     }
+    
+    isLoading = false;
+    update();
   }
 }
 
@@ -91,77 +67,65 @@ class SplashPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      body: GetBuilder<SplashController>(
-        init: SplashController(),
-        builder: (controller) {
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Spacer(flex: 2),
-                
-                // 진행 메시지
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 300),
-                  child: Container(
-                    key: ValueKey(controller.loadingMessage),
-                    padding: const EdgeInsets.symmetric(horizontal: 40),
-                    child: Text(
-                      controller.loadingMessage,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        color: Colors.black87,
-                        height: 1.5,
-                        fontWeight: FontWeight.w500,
-                      ),
-                      textAlign: TextAlign.center,
-                      maxLines: 3,
-                    ),
-                  ),
-                ),
-                
-                const SizedBox(height: 40),
-                
-                // 진행상태바
-                Container(
-                  width: MediaQuery.of(context).size.width * 0.7,
-                  height: 6,
-                  decoration: BoxDecoration(
-                    color: Colors.grey[200],
-                    borderRadius: BorderRadius.circular(3),
-                  ),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 500),
-                    width: (MediaQuery.of(context).size.width * 0.7) * 
-                           (controller.currentStep / controller.totalSteps),
-                    height: 6,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF6B73FF),
-                      borderRadius: BorderRadius.circular(3),
-                    ),
-                  ),
-                ),
-                
-                const SizedBox(height: 16),
-                
-                // 진행률 텍스트
-                Text(
-                  '${controller.currentStep}/${controller.totalSteps}',
-                  style: const TextStyle(
-                    fontSize: 14,
-                    color: Colors.grey,
-                    fontWeight: FontWeight.w400,
-                  ),
-                ),
-                
-                const Spacer(flex: 3),
-              ],
+    return GetBuilder<SplashController>(
+      builder: (controller) {
+        return Scaffold(
+          body: controller.isLoading 
+            ? _buildLoadingScreen(controller)
+            : _buildNavigationScreen(controller),
+        );
+      },
+    );
+  }
+  
+  Widget _buildLoadingScreen(SplashController controller) {
+    return Container(
+      color: Colors.white,
+      padding: const EdgeInsets.all(24),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // 앱 타이틀
+            const CommonTitle(
+              text: '마음리듬',
+              fontSize: 36,
             ),
-          );
-        },
+            const SizedBox(height: 60),
+            
+            // 로딩 메시지
+            CommonSubTitle(
+              text: controller.loadingMessage,
+              fontSize: 18,
+              color: Colors.black87,
+            ),
+            const SizedBox(height: 24),
+            
+            // 진행 상태 바
+            SizedBox(
+              width: 240,
+              child: LinearProgressIndicator(
+                backgroundColor: Colors.grey[200],
+                valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF6B73FF)),
+              ),
+            ),
+          ],
+        ),
       ),
     );
+  }
+  
+  Widget _buildNavigationScreen(SplashController controller) {
+    if (!controller.notification) {
+      return const PermissionPage();
+    }
+    
+    if (!controller.userInfo) {
+      return LoginPage(
+        userId: controller.userId,  // 이전 로그인 ID가 있다면 전달
+      );
+    }
+    
+    return UserInfoPage(userId: controller.userId!);
   }
 }

@@ -40,6 +40,20 @@ dependencies:
   
   # Permissions
   permission_handler: ^11.3.1
+  
+  # Database
+  sqflite: ^2.3.2
+  path: ^1.9.0
+  
+  # UI
+  url_launcher: ^6.2.5
+  
+  # Network
+  http: ^1.2.1
+  
+  # Notifications
+  flutter_local_notifications: ^19.0.1
+  intl: ^0.20.2
 
 dev_dependencies:
   flutter_test:

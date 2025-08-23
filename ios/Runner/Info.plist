@@ -45,5 +45,13 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSUserNotificationsUsageDescription</key>
+	<string>마음리듬은 정해진 시간에 설문 알림을 보내기 위해 알림 권한이 필요합니다.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>마음리듬은 디버깅을 위해 로컬 네트워크 액세스가 필요합니다.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_dartobservatory._tcp</string>
+	</array>
 </dict>
 </plist>

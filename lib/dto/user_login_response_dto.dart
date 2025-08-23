@@ -121,6 +121,8 @@ class UserLoginResponseDto {
       'message': message,
       'loginSuccess': isLoginSuccess,
       'loginMessage': data.login.msg,
+      'userCode': data.login.userCode,
+      'userName': data.login.name,
       'surveys': surveys.map((s) => s.toJson()).toList(),
     };
   }
@@ -134,6 +136,8 @@ class UserLoginResponseDto {
         login: LoginDto(
           success: storageData['loginSuccess'] ?? false,
           msg: storageData['loginMessage'] ?? '로컬 데이터 로드',
+          userCode: storageData['userCode'] ?? '',
+          name: storageData['userName'] ?? '',
         ),
         surveys: (storageData['surveys'] as List<dynamic>?)
             ?.map((s) => SurveyDto.fromJson(s))
