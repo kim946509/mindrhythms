@@ -71,16 +71,54 @@ class NotificationService {
   static Future<bool> requestPermission() async {
     if (!_isInitialized) await initialize();
     
-    // iOS에서만 필요 (Android는 매니페스트에서 설정)
-    final settings = await _notificationsPlugin.resolvePlatformSpecificImplementation<
-        IOSFlutterLocalNotificationsPlugin>()?.requestPermissions(
-      alert: true,
-      badge: true,
-      sound: true,
-    );
-
-    return settings ?? true; // iOS가 아닌 경우 true 반환
+    bool allPermissionsGranted = true;
+    
+    // iOS 권한 요청
+    if (Platform.isIOS) {
+      final settings = await _notificationsPlugin.resolvePlatformSpecificImplementation<
+          IOSFlutterLocalNotificationsPlugin>()?.requestPermissions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+      allPermissionsGranted = allPermissionsGranted && (settings ?? true);
+    }
+    
+    // Android 백그라운드 알림 권한 확인
+    if (Platform.isAndroid) {
+      try {
+        final android = _notificationsPlugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+        
+        // 1. 기본 알림 권한 확인
+        final areNotificationsEnabled = await android?.areNotificationsEnabled() ?? false;
+        if (!areNotificationsEnabled) {
+          debugPrint('기본 알림 권한이 비활성화되어 있습니다.');
+          allPermissionsGranted = false;
+        }
+        
+        // 2. 정확 알람 권한 확인 (Android 12+)
+        final canExact = await android?.canScheduleExactNotifications() ?? false;
+        if (!canExact) {
+          debugPrint('정확 알람 권한이 없습니다. 백그라운드 알림이 부정확할 수 있습니다.');
+          // Android 12+에서는 시스템 설정으로 이동해야 함
+          await android?.requestExactAlarmsPermission();
+        }
+        
+        // 3. 권한 상태 로그
+        debugPrint('Android 권한 상태:');
+        debugPrint('  - 기본 알림: ${areNotificationsEnabled ? "허용" : "차단"}');
+        debugPrint('  - 정확 알람: ${canExact ? "허용" : "차단"}');
+        
+      } catch (e) {
+        debugPrint('Android 권한 확인 중 오류: $e');
+        allPermissionsGranted = false;
+      }
+    }
+    
+    return allPermissionsGranted;
   }
+
+
 
   // 설문 알림 스케줄링
   static Future<void> scheduleSurveyNotifications({
@@ -92,6 +130,12 @@ class NotificationService {
   }) async {
     if (!_isInitialized) await initialize();
     
+    // 권한 확인 및 요청
+    final hasPermission = await requestPermission();
+    if (!hasPermission) {
+      debugPrint('알림 권한이 부족합니다. 백그라운드 알림이 작동하지 않을 수 있습니다.');
+    }
+    
     // 1. DB에서 기존 알림 정보 조회
     final db = await DataBaseManager.database;
     final existingNotifications = await db.query(
@@ -102,6 +146,7 @@ class NotificationService {
     
     debugPrint('=== 알림 상태 진단 ===');
     debugPrint('DB 조회 결과: ${existingNotifications.length}개');
+    debugPrint('알림 권한 상태: ${hasPermission ? "허용됨" : "부족함"}');
     
     if (existingNotifications.isNotEmpty) {
       debugPrint('DB 첫 번째 항목: ${existingNotifications.first}');
