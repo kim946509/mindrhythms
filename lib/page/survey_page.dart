@@ -9,6 +9,7 @@ import '../widget/multiple_choice_question_widget.dart';
 import '../widget/nine_point_scale_question_widget.dart';
 import '../widget/txt_choice_question_widget.dart';
 import '../widget/common_large_button.dart';
+import '../page/home_page.dart';
 
 /// 설문 페이지를 관리하는 컨트롤러
 /// 
@@ -726,7 +727,7 @@ class SurveyPageController extends GetxController {
         );
         
         // 홈 화면으로 이동
-        Get.offAllNamed('/'); // 홈 화면으로 이동
+        Get.offAll(() => HomePage()); // 홈 화면으로 이동
         
       } else {
         // API 오류 메시지 표시
@@ -752,6 +753,12 @@ class SurveyPageController extends GetxController {
   }
   
   /// survey_status 테이블을 업데이트하는 메서드
+  /// 
+  /// 동작 방식:
+  /// 1. survey_page 테이블에서 해당 설문의 실제 시간대 조회 (중복 제거)
+  /// 2. 해당 날짜의 모든 설문 시간대 레코드가 있는지 확인
+  /// 3. 없는 시간대는 submitted: 0으로 생성
+  /// 4. 현재 설문한 시간대만 submitted: 1로 설정
   Future<void> _updateSurveyStatus(bool isCompleted) async {
     try {
       final db = await DataBaseManager.database;
@@ -760,21 +767,93 @@ class SurveyPageController extends GetxController {
       final today = DateTime.now();
       final dateString = "${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}";
       
-      final result = await db.update(
-        'survey_status',
-        {
-          'submitted': isCompleted ? 1 : 0,
-          'submitted_at': DateTime.now().toIso8601String(),
-        },
-        where: 'survey_id = ? AND time = ? AND survey_date = ?',
-        whereArgs: [surveyId, time, dateString],
-      );
+      debugPrint('🔍 survey_status 업데이트 시작: surveyId=$surveyId, time=$time, date=$dateString');
       
-      if (result > 0) {
-        debugPrint('✅ survey_status 테이블 업데이트 성공: $result개 행 수정됨');
-      } else {
-        debugPrint('⚠️ survey_status 테이블 업데이트 실패: 수정된 행이 없음');
+      // survey_page 테이블에서 해당 설문의 실제 시간대 조회 (중복 제거)
+      final surveyPages = await db.rawQuery('''
+        SELECT DISTINCT time 
+        FROM survey_page 
+        WHERE survey_id = ? 
+        ORDER BY time ASC
+      ''', [surveyId]);
+      
+      if (surveyPages.isEmpty) {
+        debugPrint('❌ survey_page 테이블에서 설문 시간대를 찾을 수 없습니다.');
+        return;
       }
+      
+      // 실제 설문 시간대 추출 (중복 제거된 시간대)
+      final actualTimes = surveyPages.map((page) => page['time'] as String).toList();
+      debugPrint('🔍 설문 시간대 조회 결과 (중복 제거): $actualTimes');
+      
+      // 사용자 정보 가져오기
+      final userInfo = await DataBaseManager.getUserInfo();
+      if (userInfo == null) {
+        debugPrint('❌ 사용자 정보를 찾을 수 없어 survey_status 생성 실패');
+        return;
+      }
+      final userId = userInfo['user_id'] as String;
+      
+      // 각 시간대별로 레코드 확인 및 생성/업데이트
+      for (final surveyTime in actualTimes) {
+        debugPrint('🔍 시간대 $surveyTime 처리 중...');
+        
+        // 해당 시간대의 레코드가 존재하는지 확인
+        final existingRecords = await db.query(
+          'survey_status',
+          where: 'survey_id = ? AND user_id = ? AND survey_date = ? AND time = ?',
+          whereArgs: [surveyId, userId, dateString, surveyTime],
+        );
+        
+        if (existingRecords.isNotEmpty) {
+          // 레코드가 존재하면 업데이트
+          final recordId = existingRecords.first['id'];
+          final shouldSubmit = (surveyTime == time && isCompleted) ? 1 : 0;
+          
+          debugPrint('🔍 기존 레코드 UPDATE: ID=$recordId, submitted=$shouldSubmit');
+          
+          final result = await db.update(
+            'survey_status',
+            {
+              'submitted': shouldSubmit,
+              'submitted_at': shouldSubmit == 1 ? DateTime.now().toIso8601String() : null,
+            },
+            where: 'id = ?',
+            whereArgs: [recordId],
+          );
+          
+          if (result > 0) {
+            debugPrint('✅ 시간대 $surveyTime 업데이트 성공');
+          } else {
+            debugPrint('⚠️ 시간대 $surveyTime 업데이트 실패');
+          }
+        } else {
+          // 레코드가 없으면 새로 생성
+          final shouldSubmit = (surveyTime == time && isCompleted) ? 1 : 0;
+          
+          debugPrint('🔍 새 레코드 INSERT: time=$surveyTime, submitted=$shouldSubmit');
+          
+          final result = await db.insert(
+            'survey_status',
+            {
+              'survey_id': surveyId,
+              'user_id': userId,
+              'survey_date': dateString,
+              'time': surveyTime,
+              'submitted': shouldSubmit,
+              'submitted_at': shouldSubmit == 1 ? DateTime.now().toIso8601String() : null,
+            },
+          );
+          
+          if (result > 0) {
+            debugPrint('✅ 시간대 $surveyTime 새 레코드 생성 성공: ID=$result');
+          } else {
+            debugPrint('⚠️ 시간대 $surveyTime 새 레코드 생성 실패');
+          }
+        }
+      }
+      
+      debugPrint('✅ survey_status 테이블 전체 업데이트 완료');
       
     } catch (e) {
       debugPrint('❌ survey_status 테이블 업데이트 중 오류: $e');
@@ -972,17 +1051,7 @@ class SurveyPage extends StatelessWidget {
                             backgroundColor: Colors.grey.shade300,
                             valueColor: const AlwaysStoppedAnimation<Color>(Colors.blue),
                           ),
-                          Padding(
-                            padding: const EdgeInsets.all(8.0),
-                            child: Text(
-                              controller.progressText,
-                              style: const TextStyle(
-                                fontSize: 14,
-                                color: Colors.grey,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
+                          
                         ],
                       ),
                       
