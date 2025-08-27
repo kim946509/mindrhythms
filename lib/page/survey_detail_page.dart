@@ -175,16 +175,20 @@ class SurveyDetailPageController extends GetxController {
         final existingStatus = statuses.firstWhere(
           (status) => status['time'] == time,
           orElse: () => {
+            'survey_id': surveyId,
+            'user_id': userId,
+            'survey_date': today,
             'time': time,
             'submitted': 0,
             'submitted_at': null,
           },
         );
 
-        // 현재 시간 기준으로 설문 가능 여부 추가
+        // submitted 상태를 보존하면서 현재 시간 기준으로 설문 가능 여부 추가
+        final isSubmitted = existingStatus['submitted'] == 1;
         return {
           ...existingStatus,
-          'canTake': canTakeSurvey(time),
+          'canTake': !isSubmitted && canTakeSurvey(time),  // 이미 제출된 설문은 비활성화
         };
       }).toList();
 
