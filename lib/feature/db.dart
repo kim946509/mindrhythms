@@ -653,7 +653,7 @@ class DataBaseManager {
           }
         }
         
-        // 3. 설문 상태 비교 및 업데이트
+        // 3. 설문 상태 비교 및 업데이트 (API 응답으로 항상 덮어쓰기)
         final surveyStatus = newData['surveyStatus'];
         if (surveyStatus != null && surveyStatus is List) {
           for (final status in surveyStatus) {
@@ -672,22 +672,20 @@ class DataBaseManager {
                       existing['survey_date'] == today) {
                     found = true;
                     
-                    // 상태가 변경된 경우에만 업데이트
-                    if (existing['submitted'] != isSubmitted) {
-                      await txn.update(
-                        'survey_status',
-                        {
-                          'submitted': isSubmitted,
-                          'submitted_at': isSubmitted == 1 ? DateTime.now().toIso8601String() : null,
-                        },
-                        where: 'id = ?',
-                        whereArgs: [existing['id']]
-                      );
-                      updatedRecords++;
-                      
-                      if (enableDebugLogs) {
-                        debugPrint('설문 상태 업데이트: $timeStr (제출: $isSubmitted, Survey ID: $surveyId)');
-                      }
+                    // API 응답은 항상 덮어쓰기 (서버 응답이 가장 정확)
+                    await txn.update(
+                      'survey_status',
+                      {
+                        'submitted': isSubmitted,
+                        'submitted_at': isSubmitted == 1 ? DateTime.now().toIso8601String() : null,
+                      },
+                      where: 'id = ?',
+                      whereArgs: [existing['id']]
+                    );
+                    updatedRecords++;
+                    
+                    if (enableDebugLogs) {
+                      debugPrint('설문 상태 덮어쓰기: $timeStr (제출: $isSubmitted, Survey ID: $surveyId)');
                     }
                     break;
                   }
